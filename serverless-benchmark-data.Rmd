@@ -1,0 +1,109 @@
+---
+title: "serverless-benchmark-data"
+author: "Alexander Minyushkin"
+date: '2018.11.22'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+usePackage <- function(p) {
+  if (!is.element(p, installed.packages()[,1]))
+    install.packages(p, dep = TRUE)
+  require(p, character.only = TRUE, quietly = TRUE)
+}
+
+knitr::opts_chunk$set(fig.align = 'center')
+
+usePackage("data.table") # for fast merging of access log & sar
+usePackage("ggplot2")
+usePackage("usl")
+usePackage("jsonlite")
+usePackage("usl")
+
+Sys.setlocale("LC_TIME", "us")
+
+options(stringsAsFactors = FALSE)
+
+my_usl <- function(n, sigma, kappa) {
+ n/(1 + sigma*(n-1) + kappa*n*(n-1)) 
+}
+
+
+set.seed(20181122)
+
+```
+
+## Serverless USL 
+```{r}
+D <- data.table(fromJSON('dump.json'))
+
+D <- D[!is.na(fibonacciTime)]
+
+  ggplot(data = D[,list(mean_time = mean(timeElapsed)),'concurrency,provider'], 
+         aes(x=concurrency, 
+             y=mean_time,
+             group=provider,
+             color=provider)) +
+    geom_point() + ggtitle("")
+  
+## File with data
+  
+  concurrency_1_series <- function(D, provider_of_interest = 'aws') {
+    #max(cumsum(diff(D[concurrency==1 & provider== 'aws',,]$start)>2*1000))
+    
+    D_prov <- D[concurrency==1 & provider==provider_of_interest][order(start)]
+    
+    D_prov$step = c(0, diff(D_prov$start))
+    D_prov$series = cumsum(D_prov$step>4*1000)
+    D_prov[series==max(D_prov$series),
+           list(num_of_calls = length(timeElapsed), total_time = max(end) - min(start)),
+           'concurrency,provider']
+  }
+  #  aws azure   gcf   ibm concurrency_1_series(D, 'aws')
+  D_aggregated = 
+  rbind(concurrency_1_series(D, 'aws'),
+        concurrency_1_series(D, 'azure'),
+        concurrency_1_series(D, 'gcf'),
+        concurrency_1_series(D, 'ibm'),
+        D[concurrency>1,
+          list(num_of_calls = length(timeElapsed), total_time = max(end) - min(start)),
+          'concurrency,provider']
+  )
+  
+  D_aggregated$average_processing_time <- D_aggregated$total_time / D_aggregated$num_of_calls
+  
+    ggplot(data = D_aggregated, 
+         aes(x=concurrency, 
+             y=average_processing_time,
+             group=provider,
+             color=provider)) +
+    geom_point() + ggtitle("Average processing time vs Concurrency")
+    
+    
+D_aggregated<-merge(D_aggregated, 
+                    D_aggregated[concurrency==1,
+                                 list(average_processing_time_1 = average_processing_time, 
+                                      provider)])
+    
+
+D_aggregated$speedup <- D_aggregated$average_processing_time_1 / D_aggregated$average_processing_time
+    
+
+    ggplot(data = D_aggregated, 
+         aes(x=concurrency, 
+             y=speedup,
+             group=provider,
+             color=provider)) +
+    geom_point() + ggtitle("Speedup vs Concurrency")
+    
+  
+usl.model <- usl(speedup ~ concurrency, D_aggregated[provider=='gcf' & concurrency > 1])
+usl.model
+confint(usl.model)
+peak.scalability(usl.model)
+
+```
+
